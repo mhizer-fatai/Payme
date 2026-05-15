@@ -1,0 +1,17 @@
+{
+  "name": "PayMe — Instant Crypto Payments",
+  "short_name": "PayMe",
+  "description": "The fastest way to send and receive USDC and EURC on the Arc network.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0b0c10",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ],
+  "orientation": "portrait"
+}

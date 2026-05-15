@@ -1,0 +1,6 @@
+packages:
+  - '.'
+allowBuilds:
+  "@safe-global/safe-smart-account": true
+  "ds-test": true
+  "forge-std": true

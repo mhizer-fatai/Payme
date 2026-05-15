@@ -1,0 +1,8 @@
+{
+  "address": "0xE5DEcbeEED2CFc9C59999F902Cc78Bb5fE96aC4E",
+  "feeWallet": "0xeB3DD0faF85FC7C6aB13B41cC9371b1FE0797842",
+  "feeBps": 50,
+  "network": "arc_testnet",
+  "chainId": 5042002,
+  "deployedAt": "2026-04-16T15:14:49.154Z"
+}

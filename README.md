@@ -1,6 +1,5 @@
-# Cavopay — The Stablecoin Neobank & Payment Account on Arc
+# Cavopay — Stablecoin Neobank & Payment Account on Arc
 
-> **Build on Arc Hackathon Submission (DeFi Track)**  
 > **Settlement Network**: Arc Testnet  
 > **Core Assets**: USDC & EURC  
 
@@ -25,12 +24,6 @@ Cavopay is a stablecoin-native payment account on Arc that lets users, creators,
 - **Frontend**: React 19, Vite, TypeScript, React Router, Wagmi, Viem, Lucide Icons, QR rendering.
 - **Backend**: Node.js, Express, Supabase (PostgreSQL with RLS), Circle Developer Wallet SDK.
 - **Smart Contracts**: Solidity, Hardhat, OpenZeppelin payment settlement contracts.
-
----
-
-## Documentation
-
-- **[hackathon-submission.md](hackathon-submission.md)** — Complete Hackathon submission details, track fit, and problem/solution breakdown.
 
 ---
 

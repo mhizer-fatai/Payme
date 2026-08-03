@@ -53,6 +53,8 @@ scratch/
 roadmap.md
 PROJECT.md
 agent_rule.md
+presentation_deck.md
+
 
 # Entity setup scripts
 backend/scripts/register-entity-secret.mjs

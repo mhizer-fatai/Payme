@@ -8,7 +8,7 @@ Cavopay is a stablecoin-native payment account on Arc that lets users, creators,
 
 ---
 
-## Features
+## Key Features
 
 - **Web2 Onboarding**: Sign in with Google Auth or Email OTP — no seed phrases or web3 browser extensions required.
 - **Circle In-App Wallets**: Automatic developer-controlled wallet creation for every user.
@@ -28,10 +28,9 @@ Cavopay is a stablecoin-native payment account on Arc that lets users, creators,
 
 ---
 
-## Key Repository Files & Presentation
+## Documentation
 
 - **[hackathon-submission.md](hackathon-submission.md)** — Complete Hackathon submission details, track fit, and problem/solution breakdown.
-- **[presentation_deck.md](presentation_deck.md)** — 10-slide presentation deck outline for pitch presentations.
 
 ---
 

@@ -12,6 +12,8 @@ build/
 out/
 .next/
 PAYME_DIST/
+.dev-logs/
+backend/recovery/
 
 # Environment Variables (CRITICAL)
 .env
@@ -46,3 +48,13 @@ yarn-error.log*
 
 # Skills & internal docs
 skills/
+.agents/
+scratch/
+roadmap.md
+PROJECT.md
+agent_rule.md
+
+# Entity setup scripts
+backend/scripts/register-entity-secret.mjs
+backend/scripts/setup-entity-secret.mjs
+

@@ -9,8 +9,5 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
-  },
-  "dependencies": {
-    "@circle-fin/app-kit": "^1.4.1"
   }
 }

@@ -1,23 +1,29 @@
 import { Link } from 'react-router-dom'
-import { useAccount } from 'wagmi'
+import { useLocation } from 'react-router-dom'
+import { usePayMeAuth } from '../context/AuthContext'
 import WalletButton from './WalletButton'
 
-export default function Navbar() {
-  const { isConnected } = useAccount()
+export default function Navbar({ username }: { username?: string }) {
+  const { user } = usePayMeAuth()
+  const location = useLocation()
+  const isLoggedIn = !!user?.paymeSessionToken
+  const isDashboard = location.pathname.startsWith('/dashboard')
+
   return (
     <nav className="navbar">
       <div className="container navbar-inner">
         <Link to="/" className="nav-logo" style={{ display: 'flex', alignItems: 'center' }}>
-          <img src="/logo.png" alt="PayMe" style={{ width: 40, height: 40, borderRadius: 10, display: 'block' }} />
-          <img src="/payme-text.png" alt="PayMe" style={{ height: 36, display: 'block', marginLeft: 12 }} />
+          <img src="/cavopay-logo.png" alt="Cavopay" className="brand-logo-img" />
+          <img src="/cavopay-wordmark.png" alt="Cavopay" className="brand-wordmark-img" />
         </Link>
         <div className="nav-right">
-          {isConnected && (
-            <Link to="/dashboard" className="btn btn-ghost btn-sm">
-              Dashboard
-            </Link>
+          {isDashboard ? (
+            <WalletButton username={username} />
+          ) : isLoggedIn ? (
+            <Link to="/dashboard" className="btn btn-secondary btn-sm">Dashboard</Link>
+          ) : (
+            <WalletButton />
           )}
-          <WalletButton />
         </div>
       </div>
     </nav>

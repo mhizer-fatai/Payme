@@ -1,12 +1,13 @@
 const express = require("express");
 const { v4: uuidv4 } = require("uuid");
 const { supabase, memStore } = require("../supabase");
+const { requirePayMeSession } = require("../services/paymeSessionService");
 
 const router = express.Router();
 
 // ─── POST /api/links ─────────────────────────────────────────────────────────
 // Create a new payment link
-router.post("/", async (req, res) => {
+router.post("/", requirePayMeSession, async (req, res) => {
   try {
     const { creatorAddress, amount, token, note } = req.body;
 
@@ -16,6 +17,18 @@ router.post("/", async (req, res) => {
 
     if (!/^0x[a-fA-F0-9]{40}$/i.test(creatorAddress)) {
       return res.status(400).json({ error: "Invalid wallet address format" });
+    }
+
+    if (supabase) {
+      const { data: wallet, error: walletErr } = await supabase
+        .from("user_wallets")
+        .select("wallet_address")
+        .eq("user_address", req.paymeSession.userKey)
+        .eq("wallet_address", creatorAddress.toLowerCase())
+        .eq("wallet_type", "developer_controlled")
+        .maybeSingle();
+      if (walletErr) throw walletErr;
+      if (!wallet) return res.status(403).json({ error: "Cavopay session does not own this wallet" });
     }
 
     if (!["USDC", "EURC"].includes(token)) {

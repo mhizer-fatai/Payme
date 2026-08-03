@@ -4,15 +4,26 @@ const { v4: uuidv4 } = require("uuid");
 
 const router = express.Router();
 
+const CHAIN_RPC = {
+  Arc_Testnet: "https://rpc.testnet.arc.network",
+  Ethereum_Sepolia: "https://ethereum-sepolia-rpc.publicnode.com",
+  Base_Sepolia: "https://base-sepolia-rpc.publicnode.com",
+  Arbitrum_Sepolia: "https://arbitrum-sepolia-rpc.publicnode.com",
+  Optimism_Sepolia: "https://optimism-sepolia-rpc.publicnode.com",
+  Polygon_Amoy_Testnet: "https://polygon-amoy-bor-rpc.publicnode.com",
+};
+
 // ─── POST /api/payments ───────────────────────────────────────────────────────
 // Log a confirmed on-chain payment
 router.post("/", async (req, res) => {
   try {
-    const { linkId, payerAddress, txHash, amount, token } = req.body;
+    const { linkId, payerAddress, recipientAddress, sourceChain, destinationChain, txHash, amount, token } = req.body;
+    const normalizedSourceChain = sourceChain || "Arc_Testnet";
+    const rpcUrl = CHAIN_RPC[normalizedSourceChain];
 
-    if (!linkId || !payerAddress || !txHash) {
+    if (!payerAddress || !txHash) {
       return res.status(400).json({
-        error: "linkId, payerAddress, and txHash are required",
+        error: "payerAddress and txHash are required",
       });
     }
 
@@ -20,16 +31,22 @@ router.post("/", async (req, res) => {
     if (!/^0x[a-fA-F0-9]{40}$/i.test(payerAddress)) {
       return res.status(400).json({ error: "Invalid wallet address format" });
     }
+    if (recipientAddress && !/^0x[a-fA-F0-9]{40}$/i.test(recipientAddress)) {
+      return res.status(400).json({ error: "Invalid recipient wallet address format" });
+    }
 
     // ─── tx_hash validation: format check ───────────────────────────────────────
     if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
       return res.status(400).json({ error: "Invalid transaction hash format" });
     }
+    if (!rpcUrl) {
+      return res.status(400).json({ error: "Unsupported source chain" });
+    }
 
     // ─── tx_hash validation: on-chain verification ────────────────────────────
-    // Ask the Arc blockchain directly: does this transaction actually exist?
+    // Ask the source blockchain directly: does this transaction actually exist?
     try {
-      const rpcRes = await fetch("https://rpc.testnet.arc.network", {
+      const rpcRes = await fetch(rpcUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -57,8 +74,11 @@ router.post("/", async (req, res) => {
 
     const record = {
       id: uuidv4(),
-      link_id: linkId,
+      link_id: linkId || null,
       payer_address: payerAddress.toLowerCase(),
+      recipient_address: recipientAddress ? recipientAddress.toLowerCase() : null,
+      source_chain: normalizedSourceChain,
+      destination_chain: destinationChain || "Arc_Testnet",
       tx_hash: txHash,
       amount: amount ? parseFloat(amount) : null,
       token: token || "USDC",
@@ -87,7 +107,7 @@ router.get("/creator/:address", async (req, res) => {
 
     let records;
     if (supabase) {
-      const { data, error } = await supabase
+      const linkResult = await supabase
         .from("payments")
         .select(`
           *,
@@ -95,15 +115,25 @@ router.get("/creator/:address", async (req, res) => {
         `)
         .eq("payment_links.creator_address", address)
         .order("created_at", { ascending: false });
-      if (error) throw error;
-      records = data || [];
+      if (linkResult.error) throw linkResult.error;
+
+      const directResult = await supabase
+        .from("payments")
+        .select("*")
+        .eq("recipient_address", address)
+        .order("created_at", { ascending: false });
+      if (directResult.error) throw directResult.error;
+
+      records = [...(linkResult.data || []), ...(directResult.data || [])]
+        .filter((payment, index, all) => all.findIndex(row => row.tx_hash === payment.tx_hash) === index)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     } else {
       // In-memory: cross-reference
       const creatorLinkIds = Array.from(memStore.links.values())
         .filter((l) => l.creator_address === address)
         .map((l) => l.id);
       records = memStore.payments.filter((p) =>
-        creatorLinkIds.includes(p.link_id)
+        creatorLinkIds.includes(p.link_id) || p.recipient_address === address
       );
     }
 
@@ -126,7 +156,7 @@ router.get("/payer/:address", async (req, res) => {
         .from("payments")
         .select(`
           *,
-          payment_links!inner(creator_address, note, token)
+          payment_links(creator_address, note, token)
         `)
         .eq("payer_address", address)
         .order("created_at", { ascending: false });

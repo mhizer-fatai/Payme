@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import { wagmiConfig } from './lib/wagmi'
 import App from './App'
+import { AuthProvider } from './context/AuthContext'
 import './index.css'
 
 const queryClient = new QueryClient()
@@ -14,16 +15,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <App />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
         </BrowserRouter>
       </QueryClientProvider>
     </WagmiProvider>
   </React.StrictMode>,
 )
 
-// Register PWA Service Worker
+// Register the PWA service worker only for production builds.
+// In Vite dev mode it can intercept /@vite/client and /src/*, causing a blank page.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
+    if (import.meta.env.PROD) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+      return
+    }
+
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => registrations.forEach((registration) => registration.unregister()))
+      .catch(() => {})
   })
 }

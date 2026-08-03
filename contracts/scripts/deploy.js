@@ -16,7 +16,7 @@ async function main() {
   await payMe.waitForDeployment();
 
   const address = await payMe.getAddress();
-  console.log("✅ PayMe deployed to:", address);
+  console.log("PayMe deployed to:", address);
   console.log("   Fee wallet:", FEE_WALLET);
   console.log("   Fee:", FEE_BPS, "bps (0.5%)");
   console.log("   View on explorer: https://testnet.arcscan.app/address/" + address);

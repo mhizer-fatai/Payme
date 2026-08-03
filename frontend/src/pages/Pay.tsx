@@ -1,71 +1,99 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { useAccount, useWriteContract, useReadContract, useSwitchChain } from 'wagmi'
-import { parseUnits, formatUnits } from 'viem'
-import { getPaymentLink, logPayment, PaymentLink } from '../lib/api'
+import { Link, useParams } from 'react-router-dom'
+import { useAccount, useConfig, useReadContract, useWriteContract } from 'wagmi'
+import { parseUnits } from 'viem'
 import { QRCodeSVG } from 'qrcode.react'
-import { PAYME_CONTRACT_ADDRESS, TOKENS, arcTestnet } from '../lib/config'
-import { PAYME_ABI, ERC20_ABI } from '../lib/contracts'
-import WalletButton from '../components/WalletButton'
-import { getUnifiedBalanceKit, getViemAdapter, getSolanaAdapter } from '../lib/unifiedBalance'
+import { AlertCircle, Check, CheckCircle2, ExternalLink, Hourglass, QrCode, RefreshCw, ShieldCheck } from 'lucide-react'
+import { getPaymentLink, getTokenTransfers, logPayment, type PaymentLink } from '../lib/api'
+import PaymentWalletButton from '../components/PaymentWalletButton'
+import PaymentSuccessCelebration from '../components/PaymentSuccessCelebration'
+import { ARC_TESTNET_CHAIN, PAYME_CONTRACT_ADDRESS, PAYMENT_SOURCE_CHAINS, TOKENS, arcTestnet, getPaymentSourceChain, type PaymentSourceChain } from '../lib/config'
+import { ERC20_ABI, PAYME_ABI } from '../lib/contracts'
+import { ensureWalletChain, waitForHash } from '../lib/transactions'
+import { bridgePaymentToArc } from '../lib/cctpPayments'
 
-function shorten(a: string) { return a.slice(0, 8) + '…' + a.slice(-6) }
+function shorten(address: string) {
+  return `${address.slice(0, 8)}...${address.slice(-6)}`
+}
 
-/** Convert a UUID string → bytes32 hex */
 function uuidToBytes32(uuid: string): `0x${string}` {
   const hex = uuid.replace(/-/g, '')
   return `0x${hex.padEnd(64, '0')}` as `0x${string}`
 }
 
-type Step = 'idle' | 'approving' | 'paying' | 'done' | 'unified-paying'
+type Step = 'idle' | 'approving' | 'paying' | 'done'
+type TxFeedback = 'idle' | 'preparing' | 'wallet' | 'submitted' | 'confirming' | 'recording' | 'success'
 
 const DEMO_LINK: PaymentLink = {
   id: 'demo',
   creator_address: '0x1234567890abcdef1234567890abcdef12345678',
   amount: 25,
   token: 'USDC',
-  note: 'Demo payment — Coffee & lunch',
+  note: 'Demo payment - Coffee and lunch',
   created_at: new Date().toISOString(),
 }
 
 export default function PayPage() {
   const { linkId } = useParams<{ linkId: string }>()
   const { address, isConnected, chainId } = useAccount()
+  const wagmiConfig = useConfig()
+  const { writeContractAsync } = useWriteContract()
 
   const [link, setLink] = useState<PaymentLink | null>(null)
   const [fetchErr, setFetchErr] = useState<string | null>(null)
   const [step, setStep] = useState<Step>('idle')
   const [txHash, setTxHash] = useState<string | null>(null)
+  const [showSuccessCelebration, setShowSuccessCelebration] = useState(false)
   const [payErr, setPayErr] = useState<string | null>(null)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
-  
-  // Unified Balance State
-  const [unifiedBalance, setUnifiedBalance] = useState<string>('0.00')
-  const [selectedSourceChain, setSelectedSourceChain] = useState<string>('Arc_Testnet')
-  const [isUnifiedFlow, setIsUnifiedFlow] = useState(false)
+  const [sourceChain, setSourceChain] = useState<PaymentSourceChain>(ARC_TESTNET_CHAIN)
+  const [qrOpen, setQrOpen] = useState(false)
+  const [txFeedback, setTxFeedback] = useState<TxFeedback>('idle')
 
-  const { switchChain } = useSwitchChain()
   useEffect(() => {
     if (!linkId) return
-    if (linkId === 'demo') { setLink(DEMO_LINK); return }
-    getPaymentLink(linkId).then(l => {
-      setLink(l)
-      if (l.is_paid && l.tx_hash) {
-        setTxHash(l.tx_hash)
-        setStep('done')
-      }
-    }).catch(() => setFetchErr('Payment link not found'))
+    if (linkId === 'demo') {
+      setLink(DEMO_LINK)
+      return
+    }
+    getPaymentLink(linkId)
+      .then(nextLink => {
+        setLink(nextLink)
+        if (nextLink.is_paid && nextLink.tx_hash) {
+          setTxHash(nextLink.tx_hash)
+          setStep('done')
+          setShowSuccessCelebration(false)
+        }
+      })
+      .catch(() => setFetchErr('Payment link not found'))
   }, [linkId])
 
-  // ─── Timer Logic ──────────────────────────────────────────────────────
+  const isDemo = link?.id === 'demo'
+  const token = link?.token === 'EURC' ? TOKENS.EURC : TOKENS.USDC
+  const amountRaw = link?.amount ? parseUnits(link.amount.toString(), token.decimals) : 0n
+  const isEurc = token.symbol === 'EURC'
+  const effectiveSourceChain = isEurc ? ARC_TESTNET_CHAIN : sourceChain
+  const isArcSource = effectiveSourceChain === ARC_TESTNET_CHAIN
+  const effectiveSelectedChain = getPaymentSourceChain(effectiveSourceChain)
+  const selectedChain = getPaymentSourceChain(sourceChain)
+  const isWrongChain = isConnected && chainId !== effectiveSelectedChain.wagmiChain.id
+
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+    address: token.address,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, PAYME_CONTRACT_ADDRESS] : undefined,
+    chainId: arcTestnet.id,
+    query: { enabled: !!address && amountRaw > 0n },
+  })
+
+  const hasAllowance = !isArcSource || (allowance !== undefined && allowance >= amountRaw && amountRaw > 0n)
+
   useEffect(() => {
     if (!link || !link.expires_at || step === 'done' || isDemo) return
 
     const tick = () => {
-      const expiry = new Date(link.expires_at!).getTime()
-      const now = new Date().getTime()
-      const diff = Math.floor((expiry - now) / 1000)
-
+      const diff = Math.floor((new Date(link.expires_at!).getTime() - Date.now()) / 1000)
       if (diff <= 0) {
         setTimeLeft(0)
         setPayErr('This payment link has expired.')
@@ -75,9 +103,9 @@ export default function PayPage() {
     }
 
     tick()
-    const timer = setInterval(tick, 1000)
-    return () => clearInterval(timer)
-  }, [link, step])
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [link, step, isDemo])
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -85,418 +113,305 @@ export default function PayPage() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  // ─── Unified Balance Fetch ──────────────────────────────────────────
-  useEffect(() => {
-    if (!address || !isConnected) return
-    
-    const fetchBalances = async () => {
-      try {
-        const kit = await getUnifiedBalanceKit()
-        
-        // 1. Fetch Unified (all chains supported by Circle)
-        const bal = await kit.unifiedBalance.getBalances({
-          token: 'USDC',
-          sources: { address: address! },
-          networkType: 'testnet',
-          includePending: true
-        })
-        let total = parseFloat(bal.totalConfirmedBalance) + parseFloat(bal.totalPendingBalance || '0')
-        
-        // 2. Fetch Solana (Optional - if separate address used)
-        if (typeof window !== 'undefined' && (window as any).solana) {
-          try {
-            const solAdapter = await getSolanaAdapter();
-            const solBal = await kit.unifiedBalance.getBalances({
-              token: 'USDC',
-              sources: [{ adapter: solAdapter }],
-              networkType: 'testnet'
-            });
-            total += parseFloat(solBal.totalConfirmedBalance) + parseFloat(solBal.totalPendingBalance || '0');
-          } catch (e) {}
-        }
-
-        setUnifiedBalance(total.toFixed(2))
-      } catch (e) {
-        console.error('Failed to fetch unified balances', e)
-      }
+  const waitForArcSettlementHash = async (recipientAddress: string, expectedAmount: bigint, startedAt: number) => {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 2500 : 5000))
+      const transfers = await getTokenTransfers(recipientAddress, token.address).catch(() => [])
+      const match = transfers.find((transfer: any) => {
+        const to = String(transfer.to || '').toLowerCase()
+        const value = BigInt(transfer.value || 0)
+        const timestamp = Number(transfer.timeStamp || 0) * 1000
+        return to === recipientAddress.toLowerCase()
+          && value === expectedAmount
+          && timestamp >= startedAt - 30000
+          && /^0x[a-fA-F0-9]{64}$/.test(String(transfer.hash || ''))
+      })
+      if (match?.hash) return match.hash as string
     }
-    
-    fetchBalances()
-    const interval = setInterval(fetchBalances, 15000)
-    return () => clearInterval(interval)
-  }, [address, isConnected, arcUSDC])
+    return null
+  }
 
-  // ─── Derived ──────────────────────────────────────────────────────────
-  const token = link?.token === 'EURC' ? TOKENS.EURC : TOKENS.USDC
-  const amountRaw = link?.amount ? parseUnits(link.amount.toString(), token.decimals) : 0n
-
-  const { data: arcUSDC } = useReadContract({
-    address: TOKENS.USDC.address,
-    abi: ERC20_ABI,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: !!address, refetchInterval: 10000 },
-  })
-
-  // ─── Allowance ────────────────────────────────────────────────────────
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
-    address: token.address,
-    abi: ERC20_ABI,
-    functionName: 'allowance',
-    args: address ? [address, PAYME_CONTRACT_ADDRESS] : undefined,
-    query: { enabled: !!address && amountRaw > 0n },
-  })
-
-  const hasAllowance = allowance !== undefined && allowance >= amountRaw && amountRaw > 0n
-
-  // ─── Write hooks ──────────────────────────────────────────────────────
-  const { writeContractAsync } = useWriteContract()
-
-  const isWrongChain = isConnected && chainId !== arcTestnet.id
-  const isDemo = link?.id === 'demo'
-
-  // ─── Approve ──────────────────────────────────────────────────────────
   const handleApprove = async () => {
-    if (!address || !link || isDemo) return
+    if (!address || !link || isDemo || !isArcSource) return
     setPayErr(null)
     setStep('approving')
+    setTxFeedback('wallet')
     try {
-      await writeContractAsync({
+      await ensureWalletChain(wagmiConfig, chainId, arcTestnet.id)
+      const approveHash = await writeContractAsync({
         address: token.address,
         abi: ERC20_ABI,
         functionName: 'approve',
         args: [PAYME_CONTRACT_ADDRESS, amountRaw],
+        chainId: arcTestnet.id,
       })
-      await new Promise(r => setTimeout(r, 3500))
+      setTxFeedback('submitted')
+      await waitForHash(wagmiConfig, arcTestnet.id, approveHash)
       await refetchAllowance()
+      setTxFeedback('success')
       setStep('idle')
-    } catch (e: unknown) {
-      setPayErr(e instanceof Error ? e.message : 'Approval rejected')
+    } catch (error) {
+      setPayErr(error instanceof Error ? error.message : 'Approval rejected')
+      setTxFeedback('idle')
       setStep('idle')
     }
   }
 
-  // ─── Pay ─────────────────────────────────────────────────────────────
   const handlePay = async () => {
     if (!address || !link || isDemo) return
     setPayErr(null)
     setStep('paying')
+    setTxFeedback('preparing')
     try {
-      const hash = await writeContractAsync({
-        address: PAYME_CONTRACT_ADDRESS,
-        abi: PAYME_ABI,
-        functionName: 'pay',
-        args: [
-          uuidToBytes32(link.id),
-          link.creator_address as `0x${string}`,
-          token.address,
-          amountRaw,
-          link.note ?? '',
-        ],
-      })
+      let hash: `0x${string}` | string | null = null
+      const paymentStartedAt = Date.now()
+      if (isEurc && sourceChain !== ARC_TESTNET_CHAIN) setSourceChain(ARC_TESTNET_CHAIN)
+
+      if (effectiveSourceChain === ARC_TESTNET_CHAIN) {
+        await ensureWalletChain(wagmiConfig, chainId, arcTestnet.id)
+        setTxFeedback('wallet')
+        hash = await writeContractAsync({
+          address: PAYME_CONTRACT_ADDRESS,
+          abi: PAYME_ABI,
+          functionName: 'pay',
+          args: [
+            uuidToBytes32(link.id),
+            link.creator_address as `0x${string}`,
+            token.address,
+            amountRaw,
+            link.note ?? '',
+          ],
+          chainId: arcTestnet.id,
+        })
+        setTxFeedback('submitted')
+        await waitForHash(wagmiConfig, arcTestnet.id, hash as `0x${string}`)
+      } else {
+        setTxFeedback('preparing')
+        await ensureWalletChain(wagmiConfig, chainId, effectiveSelectedChain.wagmiChain.id)
+        setTxFeedback('wallet')
+        const bridge = await bridgePaymentToArc({
+          sourceChain: effectiveSourceChain,
+          recipientAddress: link.creator_address,
+          amount: link.amount?.toString() ?? '0',
+        })
+        hash = bridge.txHash
+        setTxFeedback('submitted')
+        if (!hash) {
+          hash = await waitForArcSettlementHash(link.creator_address, amountRaw, paymentStartedAt)
+        }
+      }
+
+      if (!hash) throw new Error('Payment submitted, but transaction hash is not available yet.')
+      setTxFeedback('recording')
       setTxHash(hash)
       setStep('done')
-      // log to backend (fire-and-forget)
-      logPayment({
-        linkId: link.id,
-        payerAddress: address,
-        txHash: hash,
-        amount: link.amount?.toString() ?? '0',
-        token: link.token,
-      }).catch(() => {})
-    } catch (e: unknown) {
-      setPayErr(e instanceof Error ? e.message : 'Transaction rejected')
+      setTxFeedback('success')
+      setShowSuccessCelebration(true)
+      setLink(previous => previous ? { ...previous, is_paid: true, tx_hash: hash } : previous)
+
+      try {
+        await logPayment({
+          linkId: link.id,
+          payerAddress: address,
+          recipientAddress: link.creator_address,
+          sourceChain: ARC_TESTNET_CHAIN,
+          destinationChain: ARC_TESTNET_CHAIN,
+          txHash: hash,
+          amount: link.amount?.toString() ?? '0',
+          token: link.token,
+        })
+      } catch (logError) {
+        console.warn('Payment succeeded but receipt logging failed:', logError)
+      }
+    } catch (error) {
+      setPayErr(error instanceof Error ? error.message : 'Transaction rejected')
+      setTxFeedback('idle')
       setStep('idle')
     }
   }
 
-  // ─── Unified Pay ─────────────────────────────────────────────────────
-  const handleUnifiedPay = async () => {
-    if (!address || !link || isDemo) return
-    setPayErr(null)
-    setStep('unified-paying')
-    try {
-      const kit = await getUnifiedBalanceKit()
-      const viemAdapter = await getViemAdapter()
-      
-      const destinationChain = 'Arc_Testnet' // PayMe settles on Arc
-      
-      const result = await kit.unifiedBalance.spend({
-        amount: link.amount?.toString() || '0',
-        from: { 
-          adapter: selectedSourceChain.includes('Solana') ? await getSolanaAdapter() : viemAdapter, 
-          allocations: [{ amount: link.amount?.toString() || '0', chain: selectedSourceChain as any }]
-        },
-        to: { 
-          adapter: viemAdapter, 
-          chain: 'Arc_Testnet', 
-          recipientAddress: link.creator_address 
-        },
-      })
+  const feedbackLabel = (() => {
+    if (txFeedback === 'preparing') return 'Preparing payment...'
+    if (txFeedback === 'wallet') return 'Waiting for wallet approval...'
+    if (txFeedback === 'submitted' || txFeedback === 'confirming' || txFeedback === 'recording') return 'Transaction submitted. Waiting for confirmation...'
+    if (txFeedback === 'success') return 'Transaction confirmed'
+    if (step === 'approving') return 'Waiting for wallet approval...'
+    if (step === 'paying') return 'Processing payment...'
+    return ''
+  })()
 
-      // Note: Unified balance spend returns a result which we can use to log
-      setTxHash(result.transactionHash)
-      setStep('done')
-      
-      logPayment({
-        linkId: link.id,
-        payerAddress: address,
-        txHash: result.transactionHash,
-        amount: link.amount?.toString() ?? '0',
-        token: link.token,
-      }).catch(() => {})
-      
-    } catch (e: unknown) {
-      setPayErr(e instanceof Error ? e.message : 'Unified payment failed')
-      setStep('idle')
-    }
-  }
-
-  // ─── Error state ──────────────────────────────────────────────────────
   if (fetchErr) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div className="card err-card">
+    <div className="pay-page">
+      <div className="card err-card" style={{ textAlign: 'center', maxWidth: 400 }}>
+        <AlertCircle size={48} style={{ color: 'var(--red)', marginBottom: 16, marginLeft: 'auto', marginRight: 'auto' }} />
         <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Link Not Found</h2>
-        <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 24 }}>
-          This payment link doesn't exist or has been removed.
-        </p>
-        <Link to="/" className="btn btn-primary">Create Your Own Link</Link>
+        <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 24 }}>This payment link does not exist or has been removed.</p>
+        <Link to="/" className="btn btn-primary btn-full">Create Your Own Link</Link>
       </div>
     </div>
   )
 
   if (!link) return (
     <div className="load-wrap">
-      <div className="loader" />
-      <span>Loading payment…</span>
+      <RefreshCw className="loader" style={{ animation: 'spin 1.5s linear infinite' }} />
+      <span>Loading payment details...</span>
     </div>
   )
 
-  // ─── Success overlay ──────────────────────────────────────────────────
+  if (step === 'done' && txHash && showSuccessCelebration) return (
+    <PaymentSuccessCelebration
+      amount={link.amount?.toString() ?? ''}
+      token={token.symbol}
+      recipient={link.creator_address}
+      txHash={txHash}
+      explorerUrl={`${effectiveSelectedChain.explorer}${txHash}`}
+      onClose={() => setShowSuccessCelebration(false)}
+    />
+  )
+
   if (step === 'done' && txHash) return (
-    <div className="overlay">
-      <div className="card confirm-card">
-        <div className="check-circle">✓</div>
-        <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Payment Sent!</h2>
-        <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 22 }}>
-          {link.amount ? `${link.amount} ${token.symbol} sent successfully` : 'Payment was successful'}
-        </p>
-        <div className="tx-box">
-          <div className="tx-label">Transaction Hash</div>
-          <div className="tx-hash">{txHash}</div>
+    <div className="pay-page">
+      <div className="card glass" style={{ width: '100%', maxWidth: 520, textAlign: 'center', padding: 36 }}>
+        <CheckCircle2 size={48} style={{ color: 'var(--green)', margin: '0 auto 18px' }} />
+        <h1 style={{ fontSize: 30, fontWeight: 800, marginBottom: 10 }}>Payment Already Completed</h1>
+        <p style={{ color: 'var(--text2)', fontSize: 14, marginBottom: 24 }}>This payment link has already been paid.</p>
+        <div className="pin-summary" style={{ textAlign: 'left', marginBottom: 22 }}>
+          <div><span>Amount</span><strong>{link.amount} {token.symbol}</strong></div>
+          <div><span>Recipient</span><strong>{shorten(link.creator_address)}</strong></div>
+          <div><span>Network</span><strong>Arc Testnet</strong></div>
+          <div><span>TX Hash</span><strong>{shorten(txHash)}</strong></div>
         </div>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <a
-            id="view-tx-btn"
-            href={`https://testnet.arcscan.app/tx/${txHash}`}
-            target="_blank" rel="noopener noreferrer"
-            className="btn btn-secondary btn-sm"
-          >
-            View on Explorer ↗
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <a className="btn btn-secondary" href={`${effectiveSelectedChain.explorer}${txHash}`} target="_blank" rel="noopener noreferrer">
+            View TX <ExternalLink size={14} />
           </a>
-          <Link to="/" className="btn btn-ghost btn-sm">Create Your Own Link</Link>
+          <Link to="/" className="btn btn-primary">Done</Link>
         </div>
       </div>
     </div>
   )
 
-  // ─── Main Pay UI ──────────────────────────────────────────────────────
   return (
     <div className="pay-page">
-      <div className="pay-card">
-        <div className="card card-glow">
-          {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
-            <Link to="/" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <img src="/icon.png" alt="PayMe" style={{ width: 30, height: 30, borderRadius: 7 }} />
-              <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: '-.02em' }}>PayMe</span>
+      <div className="checkout-shell">
+        <div className="checkout-card-pro">
+          <div className="checkout-topbar">
+            <Link to="/" className="checkout-brand">
+              <img src="/cavopay-logo.png" alt="Cavopay" />
+              <span>Cavopay</span>
             </Link>
-            <WalletButton />
+            <PaymentWalletButton />
           </div>
 
-          {/* Timer Badge (Centered below) */}
-          <div style={{ textAlign: 'center', marginBottom: 20 }}>
-            {timeLeft !== null && !isDemo && step !== 'done' && (
-              <div style={{ 
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
-                background: timeLeft < 300 ? 'rgba(239,68,68,.1)' : 'rgba(245,158,11,.1)',
-                color: timeLeft < 300 ? 'var(--red)' : 'var(--yellow)',
-                border: `1px solid ${timeLeft < 300 ? 'rgba(239,68,68,.2)' : 'rgba(245,158,11,.2)'}`
-              }}>
-                <span className="live-dot" style={{ background: 'currentColor' }} />
-                EXPIRES IN {formatTime(timeLeft)}
+          <div className="checkout-hero">
+            <div>
+              <span className="checkout-kicker">Payment request</span>
+              <h1>Complete Payment</h1>
+              <p>Review all details, choose the network you are paying from, then approve the transaction in your wallet.</p>
+            </div>
+            <div className="checkout-amount-box">
+              <span>Total due</span>
+              <strong>{link.amount || 'Open'} {token.symbol}</strong>
+            </div>
+          </div>
+
+          <div className="checkout-details-grid">
+            <div className="checkout-detail-row"><span>Recipient wallet</span><strong>{shorten(link.creator_address)}</strong></div>
+            <div className="checkout-detail-row"><span>Token</span><strong>{token.symbol}</strong></div>
+            <div className="checkout-detail-row"><span>Payment amount</span><strong>{link.amount ? `${link.amount} ${token.symbol}` : 'Open amount'}</strong></div>
+            <div className="checkout-detail-row"><span>Platform fee</span><strong>{link.amount ? `${(link.amount * 0.005).toFixed(4)} ${token.symbol}` : '0.00'}</strong></div>
+            <div className="checkout-detail-row"><span>Pay from</span><strong>{effectiveSelectedChain.label}</strong></div>
+            <div className="checkout-detail-row"><span>Settles on</span><strong>Arc Testnet</strong></div>
+            {timeLeft !== null && !isDemo && (
+              <div className="checkout-detail-row">
+                <span>Expires in</span>
+                <strong className={`checkout-timer ${timeLeft < 300 ? 'urgent' : ''}`}>
+                  <Hourglass size={12} /> {formatTime(timeLeft)}
+                </strong>
               </div>
             )}
+            {link.note && <div className="checkout-detail-row checkout-detail-row-wide"><span>Note</span><strong>{link.note}</strong></div>}
           </div>
 
-          {/* Amount */}
-          <div className="pay-header">
-            {link.amount ? (
-              <>
-                <div className="pay-amount display-font">{link.amount}</div>
-                <div className="pay-token">
-                  <span className={`badge-${token.symbol.toLowerCase()}`}>{token.symbol}</span>
+          <div className="checkout-control-panel">
+            <div className="form-group">
+              <label className="form-label">Pay from network</label>
+              <select className="form-input" value={sourceChain} disabled={isEurc} onChange={event => setSourceChain(event.target.value as PaymentSourceChain)}>
+                {PAYMENT_SOURCE_CHAINS.map(chain => <option key={chain.value} value={chain.value}>{chain.label}</option>)}
+              </select>
+              {isEurc && <p className="checkout-helper">EURC payments are Arc-only right now.</p>}
+            </div>
+
+            {!isDemo && (
+              <div>
+                <button type="button" className="qr-drawer-btn" onClick={() => setQrOpen(!qrOpen)}>
+                  <QrCode size={16} />
+                  <span>{qrOpen ? 'Hide QR Code' : 'Scan QR to Pay'}</span>
+                </button>
+                <div className={`qr-drawer-content ${qrOpen ? 'open' : ''}`}>
+                  <div className="qr-box"><QRCodeSVG value={window.location.href} size={110} /></div>
+                  <p className="qr-subtitle">Scan to pay with mobile wallet</p>
                 </div>
-              </>
-            ) : (
-              <div style={{ fontSize: 18, color: 'var(--text2)' }}>Open amount</div>
+              </div>
             )}
-            {link.note && <p className="pay-note">"{link.note}"</p>}
-          </div>
 
-          <div className="divider" />
+            {isDemo && <div className="alert alert-warn">This is a demo payment link. Complete account creation to receive live payments.</div>}
+            {isWrongChain && <div className="alert alert-warn">Please switch your wallet network to {effectiveSelectedChain.label}.</div>}
+            {payErr && <div className="alert alert-err">{payErr}</div>}
 
-          {/* Details */}
-          <div style={{ marginBottom: 24 }}>
-            {[
-              ['To', shorten(link.creator_address)],
-              ['Network', 'Arc Testnet'],
-              ['Token', token.symbol],
-              ...(link.amount ? [['Platform fee', `0.5% (≈ ${(link.amount * 0.005).toFixed(4)} ${token.symbol})`]] : []),
-            ].map(([lbl, val]) => (
-              <div key={lbl} className="info-row">
-                <span className="info-label">{lbl}</span>
-                <span className="info-val">{val}</span>
+            {feedbackLabel && (
+              <div className={`tx-feedback ${txFeedback === 'success' ? 'success' : ''}`}>
+                <span className={txFeedback === 'success' ? 'tx-feedback-check' : 'tx-feedback-spinner'}>
+                  {txFeedback === 'success' ? <Check size={14} /> : null}
+                </span>
+                <strong>{feedbackLabel}</strong>
               </div>
-            ))}
-          </div>
+            )}
 
-          {/* Unified Balance & Chain Selector */}
-          {!isDemo && step !== 'done' && (
-            <div className="unified-section">
-              <div className="unified-header">
-                <span className="unified-label">Pay from Any Chain</span>
-                <span className="unified-total">Balance: ${unifiedBalance} USDC</span>
-              </div>
-              <div className="chain-selector">
+            {isConnected && link.amount && !isDemo && (
+              <div className="steps-checklist">
                 {[
-                  { id: 'Arc_Testnet', name: 'Arc', icon: '/icon.png' },
-                  { id: 'Base_Sepolia', name: 'Base', icon: 'https://avatars.githubusercontent.com/u/108554348?s=200&v=4' },
-                  { id: 'Arbitrum_Sepolia', name: 'Arb', icon: 'https://avatars.githubusercontent.com/u/55228625?s=200&v=4' },
-                  { id: 'Solana_Devnet', name: 'Solana', icon: 'https://avatars.githubusercontent.com/u/35608259?s=200&v=4' }
-                ].map(c => (
-                  <button 
-                    key={c.id}
-                    className={`chain-chip ${selectedSourceChain === c.id ? 'active' : ''}`}
-                    onClick={() => {
-                      setSelectedSourceChain(c.id)
-                      setIsUnifiedFlow(c.id !== 'Arc_Testnet')
-                    }}
-                  >
-                    <img src={c.icon} alt={c.name} />
-                    <span>{c.name}</span>
-                  </button>
+                  ...(isArcSource ? [{ label: 'Approve token spend limit', done: hasAllowance || step === 'paying' || step === 'done', active: !hasAllowance && step === 'approving' }] : []),
+                  { label: isArcSource ? 'Execute payment on Arc Testnet' : 'Bridge token to Arc Testnet', done: step === 'done', active: step === 'paying' },
+                ].map((item, index) => (
+                  <div key={item.label} className={`step-checklist-item ${item.active ? 'active' : ''}`}>
+                    <div className={`step-node ${item.done ? 'completed' : item.active ? 'active' : 'idle'}`}>
+                      {item.done ? <Check size={12} /> : index + 1}
+                    </div>
+                    <span className="step-item-text">{item.label}</span>
+                  </div>
                 ))}
               </div>
-              {isUnifiedFlow && (
-                <p className="unified-hint">
-                  Using Unified Balance Kit to bridge from {selectedSourceChain.split('_')[0]} instantly.
-                </p>
-              )}
+            )}
+
+            {!isConnected ? (
+              <PaymentWalletButton className="btn-full" />
+            ) : isWrongChain ? (
+              <button className="btn btn-primary btn-full" onClick={() => ensureWalletChain(wagmiConfig, chainId, effectiveSelectedChain.wagmiChain.id).catch(error => setPayErr(error.message || 'Failed to switch network'))}>
+                Switch to {effectiveSelectedChain.label}
+              </button>
+            ) : isDemo ? (
+              <Link to="/" className="btn btn-primary btn-full">Create Your Own Link</Link>
+            ) : !link.amount ? (
+              <p className="checkout-no-amount-warning">This payment link has no fixed amount.</p>
+            ) : timeLeft !== null && timeLeft <= 0 ? (
+              <button className="btn btn-ghost btn-full" disabled>Link Expired</button>
+            ) : hasAllowance ? (
+              <button id="pay-now-btn" className="btn btn-success btn-full" disabled={step === 'paying'} onClick={handlePay}>
+                {step === 'paying' ? feedbackLabel || 'Processing payment...' : `Pay ${link.amount} ${token.symbol}`}
+              </button>
+            ) : (
+              <button id="approve-btn" className="btn btn-primary btn-full" disabled={step === 'approving'} onClick={handleApprove}>
+                {step === 'approving' ? feedbackLabel || 'Waiting for approval...' : `Approve ${token.symbol} Spending`}
+              </button>
+            )}
+
+            <div className="checkout-security-note">
+              <ShieldCheck size={15} />
+              <span>Secured with wallet approval. Cavopay never asks for your wallet seed phrase.</span>
             </div>
-          )}
-
-          {/* Scan to Pay QR */}
-          {!isDemo && step !== 'done' && (
-            <div style={{ marginBottom: 24, textAlign: 'center' }}>
-              <div style={{ 
-                background: 'white', padding: 10, borderRadius: 12, 
-                display: 'inline-block', animation: 'scaleIn 0.3s ease',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-              }}>
-                <QRCodeSVG value={window.location.href} size={120} />
-              </div>
-              <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8 }}>Scan to pay with mobile wallet</p>
-            </div>
-          )}
-
-          {/* Demo warning */}
-          {isDemo && (
-            <div className="alert alert-warn" style={{ marginBottom: 14 }}>
-              This is a demo link. Connect a wallet and deploy the contract to make real payments.
-            </div>
-          )}
-
-          {isWrongChain && (
-            <div className="alert alert-warn">Please switch to Arc Testnet in your wallet.</div>
-          )}
-          {payErr && <div className="alert alert-err">{payErr}</div>}
-
-          {/* Steps (only if amount set) */}
-          {isConnected && link.amount && !isDemo && (
-            <div style={{ marginBottom: 18 }}>
-              {[
-                { label: 'Approve token spending', done: hasAllowance || step === 'paying' || step === 'done', active: !hasAllowance && step === 'approving' },
-                { label: 'Send payment on-chain', done: step === 'done', active: step === 'paying' },
-              ].map((s, i) => (
-                <div className="step-row2" key={i}>
-                  <div className={`step-num ${s.done ? 's-done' : s.active ? 's-active' : 's-idle'}`}>
-                    {s.done ? 'OK' : i + 1}
-                  </div>
-                  <span className="step-text">{s.label}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* CTA */}
-          {!isConnected ? (
-            <WalletButton className="btn-full" />
-          ) : isWrongChain ? (
-            <button
-              className="btn btn-primary btn-full"
-              onClick={() => switchChain({ chainId: arcTestnet.id })}
-            >
-              Switch to Arc Testnet
-            </button>
-          ) : isDemo ? (
-            <Link to="/" className="btn btn-primary btn-full">
-              Create Your Own Payment Link
-            </Link>
-          ) : !link.amount ? (
-            <p style={{ textAlign: 'center', color: 'var(--text2)', fontSize: 13, padding: '12px 0' }}>
-              This link has no fixed amount. Contact the creator for details.
-            </p>
-          ) : (timeLeft !== null && timeLeft <= 0) ? (
-            <button className="btn btn-ghost btn-full" disabled>
-              Link Expired
-            </button>
-          ) : (hasAllowance && !isUnifiedFlow) ? (
-            <button
-              id="pay-now-btn"
-              className="btn btn-success btn-full"
-              disabled={step === 'paying'}
-              onClick={handlePay}
-            >
-              {step === 'paying' ? 'Sending…' : `Pay ${link.amount} ${token.symbol}`}
-            </button>
-          ) : isUnifiedFlow ? (
-            <button
-              className="btn btn-primary btn-full btn-glow"
-              disabled={step === 'unified-paying'}
-              onClick={handleUnifiedPay}
-            >
-              {step === 'unified-paying' ? 'Processing Unified Pay…' : `Unified Pay ${link.amount} USDC`}
-            </button>
-          ) : (
-            <button
-              id="approve-btn"
-              className="btn btn-primary btn-full"
-              disabled={step === 'approving'}
-              onClick={handleApprove}
-            >
-              {step === 'approving' ? 'Approving…' : `Approve ${token.symbol}`}
-            </button>
-          )}
+          </div>
         </div>
-
-        <p style={{ textAlign: 'center', marginTop: 14, fontSize: 11, color: 'var(--text3)' }}>
-          Payments settle on-chain via the Arc network.{' '}
-          <a href="https://testnet.arcscan.app" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-light)' }}>
-            View explorer ↗
-          </a>
-        </p>
       </div>
     </div>
   )

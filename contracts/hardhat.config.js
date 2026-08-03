@@ -4,22 +4,17 @@ require("dotenv").config();
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
-    version: "0.8.24",
+    version: "0.8.26",
     settings: {
       optimizer: {
         enabled: true,
         runs: 200,
       },
+      evmVersion: "cancun",
+      viaIR: true,
     },
   },
   networks: {
-    inco: {
-      url: "https://testnet.inco.org",
-      chainId: 9090,
-      accounts: process.env.DEPLOYER_PRIVATE_KEY
-        ? [process.env.DEPLOYER_PRIVATE_KEY]
-        : [],
-    },
     arc_testnet: {
       url: "https://rpc.testnet.arc.network",
       chainId: 5042002,

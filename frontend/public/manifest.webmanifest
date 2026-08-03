@@ -1,6 +1,6 @@
 {
-  "name": "PayMe — Instant Crypto Payments",
-  "short_name": "PayMe",
+  "name": "Cavopay — Stablecoin Banking",
+  "short_name": "Cavopay",
   "description": "The fastest way to send and receive USDC and EURC on the Arc network.",
   "start_url": "/dashboard",
   "display": "standalone",
@@ -8,7 +8,7 @@
   "theme_color": "#6366f1",
   "icons": [
     {
-      "src": "/logo.png",
+      "src": "/cavopay-logo.png",
       "sizes": "1024x1024",
       "type": "image/png"
     }

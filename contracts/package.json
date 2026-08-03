@@ -5,7 +5,6 @@
   "scripts": {
     "compile": "hardhat compile",
     "deploy:testnet": "hardhat run scripts/deploy.js --network arc_testnet",
-    "deploy:inco": "hardhat run scripts/deployPrivate.js --network inco",
     "test": "hardhat test"
   },
   "devDependencies": {
@@ -13,7 +12,6 @@
     "hardhat": "^2.22.0"
   },
   "dependencies": {
-    "@inco/lightning": "0.7.12",
     "@openzeppelin/contracts": "^5.0.2",
     "dotenv": "^17.4.2"
   },

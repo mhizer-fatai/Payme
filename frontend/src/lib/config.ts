@@ -1,4 +1,5 @@
 import { defineChain } from 'viem'
+import { arbitrumSepolia, baseSepolia, optimismSepolia, polygonAmoy, sepolia } from 'viem/chains'
 
 // ─── Arc Testnet ──────────────────────────────────────────────────────────────
 export const arcTestnet = defineChain({
@@ -26,7 +27,7 @@ export const TOKENS = {
   USDC: {
     address: '0x3600000000000000000000000000000000000000' as `0x${string}`,
     symbol: 'USDC',
-    decimals: 18,
+    decimals: 6,
     name: 'USD Coin',
     color: '#2563eb',
   },
@@ -50,6 +51,58 @@ export const MULTICHAIN_TOKENS = {
     USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' as `0x${string}`,
   },
 } as const
+
+export const ARC_TESTNET_CHAIN = 'Arc_Testnet'
+
+export const PAYME_SECURITY_QUESTIONS = [
+  'What city were you born in?',
+  'What is the name of your first school?',
+] as const
+
+export const PAYMENT_SOURCE_CHAINS = [
+  {
+    value: 'Arc_Testnet',
+    label: 'Arc Testnet',
+    wagmiChain: arcTestnet,
+    explorer: 'https://testnet.arcscan.app/tx/',
+  },
+  {
+    value: 'Ethereum_Sepolia',
+    label: 'Ethereum Sepolia',
+    wagmiChain: sepolia,
+    explorer: 'https://sepolia.etherscan.io/tx/',
+  },
+  {
+    value: 'Base_Sepolia',
+    label: 'Base Sepolia',
+    wagmiChain: baseSepolia,
+    explorer: 'https://sepolia.basescan.org/tx/',
+  },
+  {
+    value: 'Arbitrum_Sepolia',
+    label: 'Arbitrum Sepolia',
+    wagmiChain: arbitrumSepolia,
+    explorer: 'https://sepolia.arbiscan.io/tx/',
+  },
+  {
+    value: 'Optimism_Sepolia',
+    label: 'OP Sepolia',
+    wagmiChain: optimismSepolia,
+    explorer: 'https://sepolia-optimism.etherscan.io/tx/',
+  },
+  {
+    value: 'Polygon_Amoy_Testnet',
+    label: 'Polygon Amoy',
+    wagmiChain: polygonAmoy,
+    explorer: 'https://amoy.polygonscan.com/tx/',
+  },
+] as const
+
+export type PaymentSourceChain = typeof PAYMENT_SOURCE_CHAINS[number]['value']
+
+export function getPaymentSourceChain(value: string) {
+  return PAYMENT_SOURCE_CHAINS.find(chain => chain.value === value) || PAYMENT_SOURCE_CHAINS[0]
+}
 
 export type TokenSymbol = keyof typeof TOKENS
 
